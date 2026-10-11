@@ -88,6 +88,15 @@ app:
   trending:
     # Different accounts that must use a tag in the recent window before it can trend (one account alone never can). Raise it on a busy site.
     min-authors: ${TRENDING_MIN_AUTHORS:2}
+    # How long the trending list is reused from Redis (shared by all instances) before it is recomputed; 0 turns the cache off. Works without Redis too.
+    cache-ttl: ${TRENDING_CACHE_TTL:30s}
+    # An account counts for at most this many posts per window-length (the recent window, and each equal slice of the week before it).
+    max-posts-per-author: ${TRENDING_MAX_POSTS_PER_AUTHOR:3}
+    # Prior pseudo-count: a tag is treated as if it normally had this many posts/authors per window. Higher demands more evidence; lower lets small tags rank.
+    smoothing: ${TRENDING_SMOOTHING:3.0}
+    # Accounts younger than this many days count for less, growing linearly to full weight (0 switches the discount off), and a brand-new one counts for new-account-weight.
+    mature-account-days: ${TRENDING_MATURE_ACCOUNT_DAYS:3}
+    new-account-weight: ${TRENDING_NEW_ACCOUNT_WEIGHT:0.25}
   rate-limit:
     enabled: ${RATE_LIMIT_ENABLED:true}
   cors:

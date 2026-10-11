@@ -127,7 +127,11 @@ public class Post {
     @JoinTable(name = "post_hashtags",
             joinColumns = @JoinColumn(name = "post_id"),
             inverseJoinColumns = @JoinColumn(name = "hashtag_id"),
-            indexes = @Index(name = "idx_post_hashtags_hashtag", columnList = "hashtag_id, post_id"))
+            indexes = {
+                    @Index(name = "idx_post_hashtags_hashtag", columnList = "hashtag_id, post_id"),
+                    // The primary key leads with hashtag_id, so without this every "tags of this post" lookup (editing a post, deleting an account,
+                    // trending) would have to scan the whole link table.
+                    @Index(name = "idx_post_hashtags_post", columnList = "post_id, hashtag_id")})
     private Set<Hashtag> hashtags = new HashSet<>();
 
     /**

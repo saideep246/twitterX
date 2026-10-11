@@ -1,5 +1,6 @@
 package com.project.Xclone_backend.hashtag;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashSet;
@@ -10,16 +11,15 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.springframework.data.domain.Limit;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.project.Xclone_backend.hashtag.HashtagDtos.TrendCandidate;
 import com.project.Xclone_backend.hashtag.HashtagDtos.TrendingHashtag;
 
-import lombok.RequiredArgsConstructor;
 
 @Service
-@RequiredArgsConstructor
 public class HashtagService {
 
     /**
@@ -32,28 +32,64 @@ public class HashtagService {
     public static final int TRENDING_DEFAULT_HOURS = 6;
     /** The days before the recent window that show what is normal for a tag. */
     public static final int TRENDING_BASELINE_HOURS = 7 * 24;
-    private static final int TRENDING_CANDIDATES = 200;
+    /** Candidates handed to the scorer, chosen in SQL by participation lift (so rising tags are not crowded out by merely big ones). */
+    static final int TRENDING_CANDIDATES = 500;
     public static final int TRENDING_MAX_HOURS = 168;
     public static final int TRENDING_DEFAULT_LIMIT = 10;
     public static final int TRENDING_MAX_LIMIT = 50;
 
     private final HashtagRepository hashtagRepository;
     private final TrendingProperties trendingProperties;
+    private final Clock clock;
+    private final TrendingCache trendingCache;
+
+    @Autowired
+    public HashtagService(HashtagRepository hashtagRepository, TrendingProperties trendingProperties, TrendingCache trendingCache) {
+        this(hashtagRepository, trendingProperties, Clock.systemUTC(), trendingCache);
+    }
+
+    /** With the time source given and no cache, so tests need not depend on the real clock or on Redis. */
+    HashtagService(HashtagRepository hashtagRepository, TrendingProperties trendingProperties, Clock clock) {
+        this(hashtagRepository, trendingProperties, clock, TrendingCache.disabled());
+    }
+
+    HashtagService(HashtagRepository hashtagRepository, TrendingProperties trendingProperties, Clock clock, TrendingCache trendingCache) {
+        this.hashtagRepository = hashtagRepository;
+        this.trendingProperties = trendingProperties;
+        this.clock = clock;
+        this.trendingCache = trendingCache;
+    }
 
     /**
-     * Tags whose use in the last {@code hours} (default 6, max 7 days) is highest compared with their normal level over the week before,
-     * needing at least {@code app.trending.min-authors} different authors. See {@link TrendScorer}.
+     * Tags whose use in the last {@code hours} (default 6, max 7 days) rises most above their normal level, needing at least
+     * {@code app.trending.min-authors} different authors. The normal level comes from the {@code floor(168 / hours)} windows of the same length
+     * before it (at least one). See {@link TrendScorer} for the score.
      */
-    @Transactional(readOnly = true)
     public List<TrendingHashtag> trending(Integer hours, Integer limit) {
         int h = hours == null || hours <= 0 ? TRENDING_DEFAULT_HOURS : Math.min(hours, TRENDING_MAX_HOURS);
         int n = limit == null || limit <= 0 ? TRENDING_DEFAULT_LIMIT : Math.min(limit, TRENDING_MAX_LIMIT);
-        Instant now = Instant.now();
-        Instant recentSince = now.minus(Duration.ofHours(h));
+        // The cache holds the full top list for this window length; a smaller limit is a prefix of it. No database transaction is held while
+        // waiting on Redis: the one read-only query inside needs none.
+        List<TrendingHashtag> top = trendingCache.getOrCompute(h, () -> computeTrending(h));
+        return top.size() <= n ? top : List.copyOf(top.subList(0, n));
+    }
+
+    /** The top {@link #TRENDING_MAX_LIMIT} for a window of {@code h} hours, straight from the database. */
+    private List<TrendingHashtag> computeTrending(int h) {
+        TrendingProperties p = trendingProperties;
+        Instant now = clock.instant();
+        Duration window = Duration.ofHours(h);
+        int slices = Math.max(1, TRENDING_BASELINE_HOURS / h);
+        Instant recentSince = now.minus(window);
         Instant halfSince = now.minus(Duration.ofMinutes(h * 30L));
-        Instant since = recentSince.minus(Duration.ofHours(TRENDING_BASELINE_HOURS));
-        var candidates = hashtagRepository.findTrendCandidates(since, recentSince, halfSince, trendingProperties.minAuthors(), Limit.of(TRENDING_CANDIDATES));
-        return TrendScorer.rank(candidates, h, TRENDING_BASELINE_HOURS, n);
+        Instant since = recentSince.minus(window.multipliedBy(slices));
+        List<TrendCandidate> candidates = hashtagRepository.findTrendRows(since, recentSince, halfSince, now, window.toSeconds(),
+                p.maxPostsPerAuthor(), p.matureAccountDays(), p.newAccountWeight(), p.smoothing(), slices, p.minAuthors(), TRENDING_CANDIDATES)
+                .stream()
+                .map(r -> new TrendCandidate(r.getName(), r.getRecentPosts(), r.getRecentAuthors(), r.getPosts(), r.getAuthors(),
+                        r.getNewerAuthors(), r.getOlderAuthors(), r.getBasePostsSum() / slices, r.getBaseAuthorsSum() / slices))
+                .toList();
+        return TrendScorer.rank(candidates, p.smoothing(), TRENDING_MAX_LIMIT);
     }
 
     /** Distinct normalized tags in order of first appearance. */

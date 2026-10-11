@@ -243,13 +243,16 @@ The owner is notified of requests (`FOLLOW_REQUEST`). Turning protection off app
 
 ## Trending
 
-`GET /api/trending/hashtags` ranks tags by how far their recent use rises above their normal level, not by raw volume (`hashtag/TrendScorer.java`):
+`GET /api/trending/hashtags?hours=&limit=` ranks tags by how far their recent use rises above **their own** normal level, not by raw volume (`hashtag/TrendScorer.java`; the full design, with worked examples and trade-offs, is in [docs/trending.md](docs/trending.md)):
 
-- The **recent window** is the last `hours` (default 6, max 168). Only live posts of active, public accounts count.
-- `score = (distinct authors in the window + distinct authors in its newest half) / (1 + the tag's usual posts per window, from the 7 days before)`.
-  So a tag that is busy all the time stays down, a sudden jump goes up, the newest posts count more, and one account repeating a tag adds nothing.
-- A tag needs at least `TRENDING_MIN_AUTHORS` (default 2) different authors in the window before it can trend; a brand-new tag with enough authors can.
-  Raise it on a busy site. The list is the same for everyone and covers hashtags only.
+- The **recent window** is the last `hours` (default 6, max 168). Only live posts of active, public accounts count. The tag's normal level is its average over the `floor(168 / hours)` windows of the same length before it (at least one).
+- `score = participation + 0.5 * volume + 0.5 * momentum`, each a conservative log growth rate `ln((observed + s) / (expected + s)) - sqrt(1/(observed + s) + 1/(expected + s))`:
+  *participation* compares distinct people with the usual number of distinct people per window, *volume* compares posts (an account counts for at most 3 per window) with the usual number, *momentum* compares the newer half of the window with the older half.
+  Activity that matches the norm scores around zero, a fading tag scores below, thin evidence is pulled down, and a tag with no history is compared with a prior of `s = 3` rather than with zero.
+- Accounts younger than 3 days count for less (down to a quarter for a brand-new one), so a burst of just-created accounts ranks lower than the same number of established ones.
+- A tag needs at least `TRENDING_MIN_AUTHORS` (default 2) different authors in the window before it can trend. The response shape is unchanged: `{name, postCount, userCount}` are the plain counts in the window.
+- Settings (`application.yaml`, environment): `TRENDING_MIN_AUTHORS`, `TRENDING_MAX_POSTS_PER_AUTHOR` (3), `TRENDING_SMOOTHING` (3.0), `TRENDING_MATURE_ACCOUNT_DAYS` (3, 0 = no discount), `TRENDING_NEW_ACCOUNT_WEIGHT` (0.25).
+- **Cached in Redis** (`TRENDING_CACHE_TTL`, default 30 s, `0` turns it off): the top 50 for each window length is stored under `trending:v1:<hours>`, shared by all instances, and a smaller `limit` is a prefix of it, so one query per window length per TTL serves every page view. On a miss one caller (a short Redis lock) computes while the others wait a moment for its result. Results may be up to one TTL old; nothing needs to invalidate them. Redis is an optimisation, not a dependency: if it is unreachable the list is computed directly (the first request waits for the Redis connect timeout, `REDIS_CONNECT_TIMEOUT`, 2 s by default; Redis is then not tried for 30 s). Without the cache the cost is one query over the posts of the last 8 days (see the design doc for measurements).
 
 ## Deactivated accounts
 

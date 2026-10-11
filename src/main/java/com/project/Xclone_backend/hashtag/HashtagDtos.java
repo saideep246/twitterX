@@ -10,9 +10,13 @@ public final class HashtagDtos {
     }
 
     /**
-     * One tag's activity for trending, before it is scored: posts and distinct authors in the recent window, distinct authors in the
-     * newest half of that window, and posts over the baseline (the days before the window), which show what is normal for the tag.
+     * One tag's activity for trending, before it is scored. {@code recentPosts} and {@code recentAuthors} are the plain counts in the recent window
+     * (what the API reports). The rest are what scoring uses, each already limited per author and weighted by account age (see {@link TrendScorer}):
+     * {@code posts} and {@code authors} in the recent window, {@code newerAuthors} / {@code olderAuthors} in its newer and older half, and
+     * {@code expectedPosts} / {@code expectedAuthors}, the averages over equal-length slices of the baseline before the window (0 for a tag
+     * with no history).
      */
-    public record TrendCandidate(String name, long recentPosts, long recentAuthors, long newerHalfAuthors, long baselinePosts) {
+    public record TrendCandidate(String name, long recentPosts, long recentAuthors, double posts, double authors, double newerAuthors,
+            double olderAuthors, double expectedPosts, double expectedAuthors) {
     }
 }

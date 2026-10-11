@@ -10,6 +10,8 @@ spring:
 app:
   suggestions:
     popular-cache-ttl: 0s # tests create the data the ranking depends on
+  trending:
+    cache-ttl: 0s # tests read the ranking straight after creating its data (the cache has its own tests)
   security:
     active-user-cache-ttl: 0s # tests change account status directly in the database
   websocket:

@@ -73,6 +73,10 @@ class TrendingSpikeTest {
         jdbc.update("update posts set created_at = created_at - make_interval(hours => ?) where id = ?", hours, postId);
     }
 
+    private static Long[] crowd(Account[] accounts) {
+        return java.util.Arrays.stream(accounts).map(Account::id).toArray(Long[]::new);
+    }
+
     private List<String> trending() throws Exception {
         String body = mvc.perform(get("/api/trending/hashtags").param("limit", "50")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         return JsonPath.read(body, "$[*].name");
@@ -89,13 +93,24 @@ class TrendingSpikeTest {
         for (int i = 0; i < crowd.length; i++) {
             crowd[i] = register();
         }
-        // The evergreen tag: 8 people use it right now, but each of them also used it every day last week.
+        // Established accounts: trending counts accounts younger than a few days for less (see app.trending.mature-account-days).
         for (Account a : crowd) {
-            for (int day = 1; day <= 5; day++) {
-                age(publish(a, "#" + evergreen + " old " + day), day * 24);
-            }
+            jdbc.update("update users set created_at = now() - interval '90 days' where id = ?", a.id());
+        }
+        // The evergreen tag: 8 people use it right now, and each of them posts it in every 6-hour stretch of the past week, so 8 people in a
+        // window is simply normal for it.
+        for (Account a : crowd) {
             publish(a, "#" + evergreen + " now");
         }
+        jdbc.update("""
+                insert into posts (author_id, content, like_count, reply_count, repost_count, deleted, created_at)
+                select u.id, 'old #' || ?, 0, 0, 0, false, now() - make_interval(hours => s * 6 - 3)
+                from users u, generate_series(1, 28) s where u.id = any (?)
+                """, evergreen, crowd(crowd));
+        jdbc.update("""
+                insert into post_hashtags (hashtag_id, post_id)
+                select (select id from hashtags where name = ?), p.id from posts p where p.content = 'old #' || ?
+                """, evergreen, evergreen);
         // The spike: only 4 people, all just now, never seen before.
         for (int i = 0; i < 4; i++) {
             publish(crowd[i], "#" + spike + " breaking");
