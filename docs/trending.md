@@ -116,7 +116,23 @@ Each figure is the range of 3-4 runs of the final query with `EXPLAIN (ANALYZE)`
 * **Stampede:** on a miss the caller that wins `SET trending:lock:v1:<hours> NX EX 15` computes and stores; the others poll the key for up to 0.5 s and compute themselves only if nothing arrives. Eight concurrent callers on a real Redis ran the query once (tested).
 * **Redis is an optimisation, never a dependency:** on any Redis error the list is computed directly and Redis is skipped for 30 s (as the rate limiter does). The first request after the outage starts waits for the Redis connect timeout (2 s by default); the next ones do not (measured: 2.02 s, then 8 ms and 7 ms). A damaged entry is dropped and recomputed. An error while computing reaches the caller and releases the lock.
 * **Turned off** with a TTL of `0`; the test profile does that so tests see fresh data.
-* **Not done on purpose:** counters kept up to date in Redis as posts arrive, or an event stream (Kafka). They would remove the scan of 8 days of posts altogether, but they must be kept consistent with edits, deletions, suspensions and deactivations, and Redis can lose data; nothing measured so far justifies it.
+* **Not done on purpose:** counters kept up to date in Redis as posts arrive. They would remove the scan of 8 days of posts altogether, but they must be kept consistent with edits, deletions, suspensions, deactivations and the time-dependent account-age weights, and Redis can lose data, so the ranking could drift from the exact SQL result; nothing measured so far justifies it.
+
+### Kafka: refreshing the cache when something changes (optional, `KAFKA_ENABLED`)
+
+The TTL alone means a new tag can take up to 30 s to show. With Kafka on, post and account changes are published after commit and a consumer recomputes the cached lists within a couple of seconds.
+
+```
+request -> DB transaction commits -> PostEvent (Spring event, AFTER_COMMIT) -> background thread -> Kafka topic post-events
+ Kafka -> consumer group "trending-refresh" -> TrendingRefresher (coalesces: <= 1 refresh / 5 s) -> recompute the cached windows -> Redis
+```
+
+* **Why not the counters.** The event stream could also feed per-tag counters, but then every case that changes what counts (edit, delete, suspension, protect, account age passing 3 days) must be replayed exactly, and the result would drift from the SQL. Here an event only means "recompute", so every change (including ones it does not describe) is picked up and the ranking stays exact.
+* **What triggers an event:** a post with hashtags created, deleted (by its author or an admin), or its hashtags changed; an account deactivated / reactivated / suspended / unsuspended / removed / protected / unprotected. Not: posts without hashtags, edits that keep the tags, likes, replies.
+* **Consistency:** the event is sent after the transaction commits, so the refresh reads the database after the change. A change that lands during a refresh schedules another. Two races remain and are bounded by the TTL: a cache *miss* that started computing before a change can store its older result after the refresh; and a lost event (queue full, Kafka down) is only noticed at the next event or TTL expiry.
+* **Delivery is best effort** (no outbox): the events carry nothing that must not be lost. The producer never blocks a request (background thread, bounded queue of 1000, `max.block.ms` 2 s, 30 s cooldown after a failure). The consumer starts at the end of the topic: an old event is worth nothing.
+* **Cost:** at most one recompute per cached window per 5 s per instance while posts are being made (about 3 windows x 0.2-0.35 s of query time at the measured size), instead of one per window per TTL. On a very busy site raise `TRENDING_REFRESH_INTERVAL`.
+* **Verified** with an in-JVM broker in the tests and by hand against the `docker-compose.yml` broker: a post through the API changed the Redis entry about 2 s later and restarted its TTL; posting stayed at 10-33 ms with the broker stopped, and refreshing resumed by itself when it returned.
 
 ### The `post_hashtags (post_id, hashtag_id)` index (migration `V14`)
 
@@ -141,5 +157,6 @@ The same lookup is what editing a post (`syncHashtags`) and deleting an account 
 * The account-age discount is the only manipulation signal; aged or purchased accounts are not detected.
 * No seasonality, no near-duplicate detection (see above).
 * Candidate screening is by participation lift, not the full score.
+* Kafka (when on) makes the list fresher, not cheaper: every refresh is the same query.
 * Cost of a cache miss is linear in the posts of the last 8 days; the cache removes it for all but one request per window length per TTL, and a cold start or an outage brings it back.
 * `smoothing`, the 0.5 weights and `z = 1` are judgement calls; they were chosen on the scenarios above, not fitted to real traffic.

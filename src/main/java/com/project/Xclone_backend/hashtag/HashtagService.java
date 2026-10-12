@@ -75,7 +75,7 @@ public class HashtagService {
     }
 
     /** The top {@link #TRENDING_MAX_LIMIT} for a window of {@code h} hours, straight from the database. */
-    private List<TrendingHashtag> computeTrending(int h) {
+    List<TrendingHashtag> computeTrending(int h) {
         TrendingProperties p = trendingProperties;
         Instant now = clock.instant();
         Duration window = Duration.ofHours(h);

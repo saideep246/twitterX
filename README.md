@@ -21,6 +21,15 @@ The schema is managed by Flyway (`src/main/resources/db/migration`) and applied 
 Redis backs shared state (rate limits, caches, counters) so the API can run as several instances. Locally run
 `docker compose up -d redis`; in production set `REDIS_URL` (Upstash: the `rediss://` TLS URL). The app connects lazily.
 
+### Kafka (optional): keeping trending fresh
+
+Off by default (`KAFKA_ENABLED=false`): the app, and trending with its Redis TTL, work without a broker. With `KAFKA_ENABLED=true` and a broker at `KAFKA_BOOTSTRAP_SERVERS` (locally `docker compose up -d kafka`, a single-node KRaft broker for development):
+
+- **What is published.** After a change **commits** (a rolled-back change sends nothing), an event goes to the topic `post-events` (`KAFKA_POST_EVENTS_TOPIC`, created with 3 partitions if missing), keyed by the author id so one account's events stay in order. JSON: `{type, postId, authorId, tags, at}` with `type` one of `POST_CREATED`, `POST_DELETED`, `POST_TAGS_CHANGED` (a post with hashtags was made, deleted, or its hashtags changed; `tags` are all tags involved) and `ACCOUNT_CHANGED` (an account was deactivated, reactivated by signing in, suspended, unsuspended, removed, protected or unprotected, so its posts appear or disappear; no post, no tags). Posts without hashtags and edits that keep the same hashtags publish nothing.
+- **What consumes it.** A consumer (group `trending-refresh`, shared by all instances so each event is handled once, reading only new events) asks the refresher to recompute the **cached** trending lists, and only the window lengths that currently have a cache entry. Refreshes are coalesced: at most one per `TRENDING_REFRESH_INTERVAL` (5 s) per instance however many events arrive, and a change that lands during a refresh gets another. The database stays the source of truth, so the ranking is exactly what the query returns; Kafka only decides *when* to recompute. A refresh also restarts the entry's TTL, so with Kafka on you can raise `TRENDING_CACHE_TTL` (it is then only the safety net).
+- **It can never hurt a request.** Events are sent from a background thread behind a bounded queue (a full queue drops events), after a failed send Kafka is not tried again for 30 s, and the producer gives up on an unreachable broker within seconds. A lost event only means the list is as stale as its TTL allows; the next event or the TTL fixes it. Measured with the real broker stopped: posts still answered in 10-33 ms, one warning was logged, and refreshing resumed by itself after the broker came back.
+- Needs Redis for the cache it refreshes (without it there is nothing to refresh). Not covered: the other consumers a topic like this invites (notifications, search indexing) and keeping counters in Redis.
+
 ### Rate limiting
 
 Redis-backed fixed-window limits (`ratelimit/RateLimitRules.java`), answering `429` with `Retry-After`:

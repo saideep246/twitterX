@@ -9,6 +9,7 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Locale;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,6 +19,7 @@ import com.project.Xclone_backend.auth.AuthDtos.LoginRequest;
 import com.project.Xclone_backend.auth.AuthDtos.RegisterRequest;
 import com.project.Xclone_backend.common.ApiException;
 import com.project.Xclone_backend.config.JwtProperties;
+import com.project.Xclone_backend.postevent.PostEvent;
 import com.project.Xclone_backend.security.JwtService;
 import com.project.Xclone_backend.user.AccountStatus;
 import com.project.Xclone_backend.user.User;
@@ -39,6 +41,7 @@ public class AuthService {
     private final JwtProperties jwtProperties;
     private final UserMapper userMapper;
     private final EmailTokenService emailTokenService;
+    private final ApplicationEventPublisher events;
 
     @Transactional
     public AuthResponse register(RegisterRequest req) {
@@ -94,6 +97,7 @@ public class AuthService {
         // Checked only after the password matches, so a wrong password never changes or reveals the status.
         if (user.getStatus() == AccountStatus.DEACTIVATED) {
             user.setStatus(AccountStatus.ACTIVE);
+            events.publishEvent(PostEvent.accountChanged(user.getId())); // their posts are visible again
         } else if (user.getStatus() == AccountStatus.SUSPENDED) {
             throw ApiException.forbidden("Account suspended");
         } else if (user.getStatus() != AccountStatus.ACTIVE) {

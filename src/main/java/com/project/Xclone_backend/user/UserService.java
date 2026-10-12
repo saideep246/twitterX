@@ -3,6 +3,7 @@ package com.project.Xclone_backend.user;
 import java.util.List;
 import java.util.Locale;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Limit;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -25,6 +26,7 @@ import com.project.Xclone_backend.media.MediaService;
 import com.project.Xclone_backend.mute.Mute;
 import com.project.Xclone_backend.mute.MuteRepository;
 import com.project.Xclone_backend.notification.NotificationService;
+import com.project.Xclone_backend.postevent.PostEvent;
 import com.project.Xclone_backend.security.ActiveUserCache;
 import com.project.Xclone_backend.notification.NotificationType;
 import com.project.Xclone_backend.post.PostRepository;
@@ -67,6 +69,7 @@ public class UserService {
     private final EmailTokenService emailTokenService;
     private final EmailTokenRepository emailTokenRepository;
     private final ActiveUserCache activeUserCache;
+    private final ApplicationEventPublisher events;
 
     /** Only active accounts can be looked up by handle: a deactivated, suspended or removed one answers 404 to every action (follow, block, report, message ...). */
     public User requireByUsername(String username) {
@@ -113,6 +116,9 @@ public class UserService {
         if (req.protectedAccount() != null) {
             boolean wasProtected = user.isProtectedAccount();
             user.setProtectedAccount(req.protectedAccount());
+            if (wasProtected != req.protectedAccount()) {
+                events.publishEvent(PostEvent.accountChanged(userId)); // their posts enter or leave public view
+            }
             if (wasProtected && !req.protectedAccount()) {
                 // Nobody needs approval any more, so everyone waiting becomes a follower.
                 followRepository.approveAllRequestsTo(userId);
@@ -176,6 +182,7 @@ public class UserService {
         user.setStatus(AccountStatus.DEACTIVATED);
         refreshTokenRepository.revokeAllForUser(userId);
         activeUserCache.evictAfterCommit(userId);
+        events.publishEvent(PostEvent.accountChanged(userId));
     }
 
     /**
@@ -202,6 +209,7 @@ public class UserService {
         user.setStatus(AccountStatus.SUSPENDED);
         refreshTokenRepository.revokeAllForUser(userId);
         activeUserCache.evictAfterCommit(userId);
+        events.publishEvent(PostEvent.accountChanged(userId));
     }
 
     @Transactional
@@ -211,6 +219,7 @@ public class UserService {
             user.setStatus(AccountStatus.ACTIVE);
         }
         activeUserCache.evictAfterCommit(userId);
+        events.publishEvent(PostEvent.accountChanged(userId));
     }
 
     private void anonymize(User user) {
@@ -242,6 +251,7 @@ public class UserService {
         user.setEmailVerified(false);
         user.setStatus(AccountStatus.DELETED);
         activeUserCache.evictAfterCommit(userId);
+        events.publishEvent(PostEvent.accountChanged(userId));
     }
 
     private void requirePassword(User user, String password) {

@@ -184,4 +184,48 @@ class TrendingCacheTest {
 
         verify(values).set("trending:v1:6", "[]", TTL);
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void theCachedWindowsAreFoundWithScanAndIgnoreOtherKeys() {
+        org.springframework.data.redis.core.Cursor<String> cursor = mock(org.springframework.data.redis.core.Cursor.class);
+        when(cursor.hasNext()).thenReturn(true, true, true, true, false);
+        when(cursor.next()).thenReturn("trending:v1:24", "trending:v1:6", "trending:v1:oops", "trending:v1:168");
+        when(redis.scan(any(org.springframework.data.redis.core.ScanOptions.class))).thenReturn(cursor);
+
+        assertThat(cache.cachedWindows()).containsExactly(6, 24, 168);
+        verify(cursor).close();
+    }
+
+    @Test
+    void noWindowsAreReportedWhenTheCacheIsOffOrRedisFails() {
+        assertThat(new TrendingCache(redis, json, Duration.ZERO).cachedWindows()).isEmpty();
+        when(redis.scan(any(org.springframework.data.redis.core.ScanOptions.class))).thenThrow(new QueryTimeoutException("down"));
+
+        assertThat(cache.cachedWindows()).isEmpty();
+        assertThat(cache.cachedWindows()).isEmpty();
+        verify(redis, times(1)).scan(any(org.springframework.data.redis.core.ScanOptions.class)); // and then the cooldown
+    }
+
+    @Test
+    void refreshReplacesTheEntryWithAFreshComputationAndItsTtl() {
+        AtomicInteger calls = counter();
+
+        cache.refresh(6, () -> { calls.incrementAndGet(); return LIST; });
+
+        assertThat(calls).hasValue(1);
+        verify(values).set("trending:v1:6", JSON, TTL);
+        verify(values, never()).get(anyString()); // it never reads what was there
+    }
+
+    @Test
+    void refreshDoesNothingWhenTheCacheIsOff() {
+        AtomicInteger calls = counter();
+
+        new TrendingCache(redis, json, Duration.ZERO).refresh(6, () -> { calls.incrementAndGet(); return LIST; });
+        TrendingCache.disabled().refresh(6, () -> { calls.incrementAndGet(); return LIST; });
+
+        assertThat(calls).hasValue(0);
+        verifyNoInteractions(redis);
+    }
 }

@@ -13,6 +13,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,6 +31,7 @@ import com.project.Xclone_backend.media.MediaService;
 import com.project.Xclone_backend.mention.MentionService;
 import com.project.Xclone_backend.notification.NotificationService;
 import com.project.Xclone_backend.notification.NotificationType;
+import com.project.Xclone_backend.postevent.PostEvent;
 import com.project.Xclone_backend.post.PostDtos.CreatePostRequest;
 import com.project.Xclone_backend.post.PostDtos.CreateThreadRequest;
 import com.project.Xclone_backend.post.PostDtos.PostResponse;
@@ -65,6 +67,7 @@ public class PostService {
     private final MentionService mentionService;
     private final NotificationService notificationService;
     private final FollowRepository followRepository;
+    private final ApplicationEventPublisher events;
 
     @Transactional
     public PostResponse create(Long authorId, CreatePostRequest req) {
@@ -110,6 +113,9 @@ public class PostService {
             postRepository.addToReplyCount(parent.getId(), 1);
         }
         postRepository.save(post);
+        if (!post.getHashtags().isEmpty()) {
+            events.publishEvent(PostEvent.created(post.getId(), authorId, tagNames(post)));
+        }
         if (parent != null) {
             notificationService.notify(parent.getAuthor(), author, NotificationType.REPLY, post);
         }
@@ -191,9 +197,16 @@ public class PostService {
             throw ApiException.forbidden("You can only edit your own posts");
         }
         Set<Long> previouslyMentioned = post.getMentions().stream().map(User::getId).collect(Collectors.toSet());
+        Set<String> tagsBefore = tagNames(post);
         post.setContent(req.content().strip());
         syncHashtags(post);
         syncMentions(post);
+        Set<String> tagsAfter = tagNames(post);
+        if (!tagsBefore.equals(tagsAfter)) {
+            Set<String> touched = new HashSet<>(tagsBefore);
+            touched.addAll(tagsAfter);
+            events.publishEvent(PostEvent.tagsChanged(post.getId(), userId, touched));
+        }
         for (User mentioned : post.getMentions()) {
             if (!previouslyMentioned.contains(mentioned.getId())) {
                 notificationService.notify(mentioned, post.getAuthor(), NotificationType.MENTION, post);
@@ -222,6 +235,13 @@ public class PostService {
         if (post.getParent() != null) {
             postRepository.addToReplyCount(post.getParent().getId(), -1);
         }
+        if (!post.getHashtags().isEmpty()) {
+            events.publishEvent(PostEvent.deleted(post.getId(), post.getAuthor().getId(), tagNames(post)));
+        }
+    }
+
+    private static Set<String> tagNames(Post post) {
+        return post.getHashtags().stream().map(Hashtag::getName).collect(Collectors.toSet());
     }
 
     /** Records the report and, if the post had no open report, alerts the admins. The reported post is not changed in any way. */

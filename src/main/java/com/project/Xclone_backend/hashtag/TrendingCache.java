@@ -106,6 +106,40 @@ public class TrendingCache {
         return result;
     }
 
+    /**
+     * The window lengths that currently have a cached entry. Empty when the cache is off or Redis cannot be reached.
+     * The keys are looked up with SCAN (never KEYS), and there can be at most 168 of them.
+     */
+    List<Integer> cachedWindows() {
+        if (!enabled() || System.nanoTime() - skipRedisUntilNanos.get() < 0) {
+            return List.of();
+        }
+        List<Integer> windows = new java.util.ArrayList<>();
+        try (var cursor = redis.scan(org.springframework.data.redis.core.ScanOptions.scanOptions().match(KEY_PREFIX + "*").count(200).build())) {
+            while (cursor.hasNext()) {
+                String key = cursor.next();
+                try {
+                    windows.add(Integer.parseInt(key.substring(KEY_PREFIX.length())));
+                } catch (NumberFormatException ignored) {
+                    // not one of ours
+                }
+            }
+        } catch (RuntimeException e) {
+            redisDown(e);
+            return List.of();
+        }
+        java.util.Collections.sort(windows);
+        return windows;
+    }
+
+    /** Computes the list for {@code hours} now and stores it, replacing what was there (and restarting its TTL). Does nothing when the cache is off. */
+    void refresh(int hours, Supplier<List<TrendingHashtag>> compute) {
+        if (!enabled() || System.nanoTime() - skipRedisUntilNanos.get() < 0) {
+            return;
+        }
+        store(KEY_PREFIX + hours, compute.get());
+    }
+
     /** The cached list, or null when there is none or it cannot be read (a damaged entry is dropped). Redis errors propagate. */
     private List<TrendingHashtag> read(String key) {
         String raw = redis.opsForValue().get(key);

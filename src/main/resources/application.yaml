@@ -25,6 +25,18 @@ spring:
       url: ${REDIS_URL:redis://localhost:6379}
       timeout: ${REDIS_TIMEOUT:2s}
       connect-timeout: ${REDIS_CONNECT_TIMEOUT:2s}
+  kafka:
+    # Only used when KAFKA_ENABLED=true (see app.kafka below); without it nothing connects to a broker.
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      # The events only say "something changed": an old one is worth nothing, so a new consumer group starts at the end instead of replaying.
+      auto-offset-reset: latest
+    producer:
+      properties:
+        # A request must never wait long for a broker that is down (events are sent from a background thread, but it should not hang either).
+        max.block.ms: 2000
+        request.timeout.ms: 2000
+        delivery.timeout.ms: 5000
   flyway:
     # Migrations need session features PgBouncer's transaction mode lacks (advisory locks), so on Neon point
     # MIGRATION_DB_URL at the direct (non-pooler) URL. Defaults to the app's own datasource.
@@ -85,6 +97,14 @@ app:
     # Fan WebSocket pushes out through Redis so they reach users connected to any instance. Falls back to local
     # delivery when Redis is down. Set false to skip Redis entirely (single instance).
     redis-relay: ${WS_REDIS_RELAY:true}
+  kafka:
+    # Post and account events go to Kafka after each change commits, and a consumer refreshes the Redis trending cache within seconds instead of
+    # waiting for its TTL. Off by default: the app (and trending, with its TTL) works without a broker.
+    enabled: ${KAFKA_ENABLED:false}
+    topic: ${KAFKA_POST_EVENTS_TOPIC:post-events}
+    partitions: ${KAFKA_POST_EVENTS_PARTITIONS:3}
+    # At most one refresh per this long per instance, however many events arrive.
+    refresh-interval: ${TRENDING_REFRESH_INTERVAL:5s}
   trending:
     # Different accounts that must use a tag in the recent window before it can trend (one account alone never can). Raise it on a busy site.
     min-authors: ${TRENDING_MIN_AUTHORS:2}
